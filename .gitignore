@@ -1,0 +1,13 @@
+# VirtualBox / VM files (ne jamais pousser des disques virtuels)
+*.vdi
+*.vbox
+*.vbox-prev
+*.ova
+*.ovf
+
+# Fichiers de configuration pfSense (peuvent contenir des secrets)
+*.xml.bak
+
+# Divers
+.DS_Store
+*.log
