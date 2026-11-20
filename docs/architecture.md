@@ -16,14 +16,16 @@ pfSense acts as the central router/firewall between 4 zones:
 | Internet | NAT | 10.0.2.0/24 | 10.0.2.15 (DHCP) | WAN (em0) |
 | Servers | net-serveurs | 10.0.10.0/24 | 10.0.10.1 | LAN (em1) |
 | Users | net-users | 10.0.20.0/24 | 10.0.20.1 | OPT1 / USERS (em2) |
-| Attackers | net-attaquants | 10.0.30.0/24 | 10.0.30.1 | OPT2 / ATTACKERS (em3) |
+| Attackers | net-attackers | 10.0.30.0/24 | 10.0.30.1 | OPT2 / ATTACKERS (em3) |
+
+> Renamed from `net-attaquants` to `net-attackers` on 2026-11-19 (updated identically on both the VirtualBox adapter and the pfSense-side name).
 
 ## Machines
 
 | Machine | Zone | IP | Role |
 |---|---|---|---|
 | pfSense | all | .1 in each zone | Firewall / router |
-| Kali | Attackers | 10.0.30.10/24 | Attack machine |
+| Kali | Attackers | 10.0.30.10/24 | Attack machine; dual-homed (eth0 = NAT for internet, eth1 = lab network, with `ipv4.never-default` on eth1 and a static route to 10.0.10.0/24 via 10.0.30.1) |
 | Ubuntu | Servers | 10.0.10.20/24 | Test server (Apache) |
 | Metasploitable2 | Servers | 10.0.10.30/24 | Intentionally vulnerable target |
 | Windows Server (AD) | TBD | TBD | Upcoming |
