@@ -34,10 +34,7 @@ homelab-cyber/
 │   ├── architecture.md      # Network diagram, zones, IP addressing plan
 │   ├── journal.md           # Step-by-step lab notebook
 │   └── firewall-rules.md    # pfSense rules and their justification
-├── screenshots/
-│   ├── network/              # Network configuration captures
-│   ├── recon/                 # Scan captures (Nmap, etc.)
-│   └── rules/                  # Firewall rule captures
+├── screenshots/              # Screenshots
 └── reports/                   # Final reports (pentest, etc.)
 ```
 
