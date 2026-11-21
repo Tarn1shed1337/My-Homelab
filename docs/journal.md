@@ -69,33 +69,20 @@ Each day gets one entry. Copy the template at the bottom when starting a new day
 ## Day 3 — 2026-11-20
 
 ### Goals
-- Obtain an initial foothold on Metasploitable2 by targeting an unexploited service, concluding the Red Team phase before starting Blue Team detection.
-
-### What I did
-- Having already exploited PostgreSQL via UDF on Day 2, and having previously practiced exploiting services like MySQL and ProFTPD in prior lab contexts, I chose to skip redundant testing on those and focus my efforts on unfamiliar territory.
-- Exploited UnrealIRCd 3.2.8.1 on Metasploitable's IRC service (port 6667) using Metasploit's `exploit/unix/irc/unreal_ircd_3281_backdoor` module — [CVE-2010-2075](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2010-2075).
-- Obtained an interactive Meterpreter session; command `getuid` confirmed the session executes with `root` privileges.
-
-### What I learned
-- CVE-2010-2075 is a supply-chain backdoor: the official UnrealIRCd 3.2.8.1 source archive was tampered with at the distribution server, so the backdoor is present regardless of how the service is configured — not a logic flaw in the protocol itself.
-- Landing directly as `root` reflects how permissively the service was run on Metasploitable, which is realistic for this intentionally vulnerable target but not for a hardened production system.
-
-### Next
-- Expand the assessment to web applications exposed on port 80 (DVWA).
-- Document all exploitation findings and prepare for Blue Team detection (Wazuh SIEM).
-
----
-
-## Day 4 — 2026-11-21
-
-### Goals
+- Obtain an initial foothold on Metasploitable2 by targeting an unexploited network daemon (UnrealIRCd).
 - Assess web applications hosted on Metasploitable2 (Apache 2.2.8 / PHP 5.2.4), focusing on DVWA (Damn Vulnerable Web Application).
 - Conduct web directory reconnaissance and user enumeration.
 - Evaluate authentication brute-forcing tools (Burp Suite Intruder vs. THC-Hydra vs. Wfuzz).
 - Test OS Command Injection across different security levels (Low, Medium, High).
+- Conclude the Red Team exploitation phase and prepare for Blue Team detection.
 
 ### What I did
-- **Directory Indexing & User Enumeration**:
+- **IRC Exploitation (UnrealIRCd)**:
+  - Having already exploited PostgreSQL via UDF on Day 2, and having previously practiced exploiting services like MySQL and ProFTPD in prior lab contexts, I chose to skip redundant testing on those and focus my efforts on unfamiliar territory.
+  - Fingerprinted the IRC service on port 6667 via `irssi`, confirming `Unreal3.2.8.1. irc.Metasploitable.LAN`.
+  - Exploited UnrealIRCd 3.2.8.1 using Metasploit's `exploit/unix/irc/unreal_ircd_3281_backdoor` module — [CVE-2010-2075](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2010-2075).
+  - Obtained an interactive Meterpreter session; command `getuid` confirmed the session executes with `root` privileges.
+- **Web Directory Indexing & User Enumeration**:
   - Navigated to `http://10.0.10.30/dvwa/hackable/` and discovered directory browsing was enabled on Apache.
   - Enumerated `/dvwa/hackable/users/`, which exposed avatar image filenames revealing 5 valid application usernames: `1337`, `admin`, `gordonb`, `pablo`, and `smithy`.
 - **Authentication Brute-Forcing**:
@@ -115,6 +102,8 @@ Each day gets one entry. Copy the template at the bottom when starting a new day
 - **Medium Security Blacklist Filter**: DVWA Medium sanitized `&&` and `;`, breaking standard command chaining. Fixed by switching to the pipe operator (`|`), demonstrating the fundamental weakness of naive blacklist sanitization.
 
 ### What I learned
+- CVE-2010-2075 is a supply-chain backdoor: the official UnrealIRCd 3.2.8.1 source archive was tampered with at the distribution server, so the backdoor is present regardless of how the service is configured — not a logic flaw in the protocol itself.
+- Landing directly as `root` reflects how permissively the service was run on Metasploitable, which is realistic for this intentionally vulnerable target but not for a hardened production system.
 - Directory indexing is an overlooked high-impact information disclosure flaw that provides attackers with targeted usernames for offline or online brute-force attacks.
 - Blacklisting specific characters (`&&`, `;`) in input validation is fragile and ineffective because alternative shell operators (`|`, `||`, newline, backticks) can achieve the same command chaining.
 - Whitelisting and type checking (as implemented in DVWA High with `explode()` and `is_numeric()`) provide genuine security by ensuring inputs conform strictly to expected data types, making command injection impossible.
@@ -122,7 +111,7 @@ Each day gets one entry. Copy the template at the bottom when starting a new day
 
 ### Next
 - Finalize and compile all Red Team findings into `reports/pentest-report.md`.
-- Begin the Blue Team phase: deploy and configure Wazuh SIEM to detect the attacks executed across Days 1–4.
+- Begin the Blue Team phase: deploy and configure Wazuh SIEM to detect the attacks executed across Days 1–3.
 
 ---
 
