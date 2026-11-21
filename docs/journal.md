@@ -36,43 +36,93 @@ Each day gets one entry. Copy the template at the bottom when starting a new day
 ## Day 2 — 2026-11-19
 
 ### Goals
-- Triage Metasploitable's exposed services and conduct vulnerability & credential research.
-- Exploit identified vulnerabilities across multiple vectors (database, file sharing, remote access) to achieve root.
-- Fix a networking issue on Kali (lost internet access) and establish stable dual-homed routing.
+- Triage Metasploitable's exposed services and start credential/vulnerability research.
+- Fix a networking issue on Kali (lost internet access).
 
 ### What I did
-- Picked 3 services from the Day 1 Nmap scan to investigate: MySQL 5.0.51a (3306), PostgreSQL 8.3.0-8.3.7 (5432), and ProFTPD 1.3.1 (2121).
-- Used `searchsploit` on each service, cross-checking exact affected version strings against advisory texts rather than trusting titles alone. Confirmed a DoS vulnerability on MySQL (< 5.1.49) and noted ProFTPD 1.3.1 had no direct unauthenticated remote exploits.
-- Identified PostgreSQL's User-Defined Function (UDF) command execution (`linux/local/7855.txt`) as a prime exploit candidate, noting it requires authenticated database access first.
-- Attempted manual connection using `psql -h 10.0.10.30 -U msfadmin`; rejected due to SSL protocol mismatch (modern Kali client vs. legacy SSL on Metasploitable2).
-- Used Metasploit's `auxiliary/scanner/postgres/postgres_login` (`CreateSession true`) to brute-force default credentials: authenticated with `postgres:postgres` and opened an interactive SQL session (Session 1).
-- Learned the session's command syntax (`query <SQL>` instead of raw SQL), successfully enumerating databases (`SELECT datname FROM pg_database;` $\rightarrow$ `template1`, `template0`, `postgres`).
-- Ran `auxiliary/scanner/postgres/postgres_hashdump` on the session, successfully extracting the password hash (`postgres:md53175bce1d3201d16594cebf9d7eb3f9d`).
-- Leveraged `exploit/linux/postgres/postgres_payload`: Metasploit uploaded a shared library (`/tmp/BZmzRFSa.so`) via UDF injection, spawning a reverse Meterpreter session (Session 3) running as service user `postgres` (`uid=108`).
-- Dropped into a system shell from Meterpreter, discovered an SUID binary `/usr/bin/nmap` (v4.53), and broke out to an interactive root shell using `/usr/bin/nmap --interactive` followed by `!sh` (`euid=0(root)`, `whoami` $\rightarrow$ `root`). Dropped a proof-of-compromise flag in `/root/Desktop/pwned`.
-- Researched Samba 3.0.20 via `searchsploit` and Metasploit (`exploit/multi/samba/usermap_script`, CVE-2007-2447): triggered remote command execution in Samba's username mapping script, spawning an immediate unauthenticated reverse shell (Session 4) running directly as `root` (`uid=0(root) gid=0(root)`).
-- Tested VNC (port 5900) with `auxiliary/scanner/vnc/vnc_login`: uncovered default password `password`. Connected via `vncviewer 10.0.10.30` from Kali, obtaining full graphical X11 desktop access (TightVNC `metasploitable:0`) with an active root terminal.
-- Lost internet access on Kali; diagnosed it as `eth0` (NAT) being disconnected while `eth1` (lab network) still worked. Renamed the attackers' internal network from `net-attaquants` to `net-attackers` (updated identically in VirtualBox and pfSense).
-- Configured Linux longest-prefix-match routing: set `ipv4.never-default` on `eth1` to prevent it from competing with `eth0` for the default gateway, while binding the static route to the servers subnet (`10.0.10.0/24 via 10.0.30.1 dev eth1`).
-- Hit transient duplicate/corrupted ping replies after toggling the virtual cable — resolved by properly reconnecting the adapter and letting ARP settle; confirmed full connectivity across both WAN and the lab.
+- Picked 3 services from the Nmap scan to investigate: MySQL 5.0.51a (3306), PostgreSQL 8.3.0-8.3.7 (5432), ProFTPD 1.3.1 (2121).
+- Used `searchsploit` on each, then learned to cross-check the exact affected version against each result instead of trusting the title alone — several results didn't actually apply to the installed version.
+- Confirmed a real match for MySQL (DoS, versions prior to 5.1.49) via a public advisory.
+- Identified PostgreSQL's UDF command execution path as the most interesting lead, but noted it requires authenticated DB access first — not a pre-auth exploit.
+- Used Metasploit's `auxiliary/scanner/postgres/postgres_login` module to test for default/weak credentials on PostgreSQL: found a valid account and got an interactive session.
+- Learned the session's command syntax (`query <SQL>` instead of raw SQL), and reviewed the list of follow-up modules available from that session (hashdump, schemadump, version, etc.).
+- Lost internet access on Kali; diagnosed it as eth0 (NAT) being disconnected while eth1 (lab network) still worked. Renamed the attackers' internal network from `net-attaquants` to `net-attackers` (updated identically in pfSense).
+- Learned how Linux picks which interface to use per destination: longest-prefix-match routing, with `ipv4.never-default` on eth1 preventing it from competing with eth0 for the default route.
+- Hit transient duplicate/corrupted ping replies after repeatedly toggling the virtual cable — resolved by reconnecting properly and flushing the ARP cache; confirmed real traffic (HTTP to Metasploitable) was unaffected.
 
 ### Problems & fixes
 - `searchsploit <product>` without a version returns every version's exploits — must filter manually or re-run with the exact version string.
-- `psql` client failed with `SSL error: unsupported protocol` — caused by modern OpenSSL rejecting legacy SSLv2/v3. Metasploit's auxiliary module handled legacy SSL negotiation cleanly.
-- `SHOW DATABASES;` caused syntax error in PostgreSQL session — recognized MySQL vs. PostgreSQL syntax difference and used PostgreSQL catalog query `SELECT datname FROM pg_database;`.
-- Kali's `eth0` showed as `disconnected` because the virtual cable was unplugged in VirtualBox from an earlier test; reconnecting it and configuring `ipv4.never-default` on `eth1` restored stable multi-homing.
-- Flapping the virtual cable left stale ARP entries, producing corrupted/duplicate ping replies — resolved once the connection stabilized.
+- Kali's eth0 showed as `disconnected` because the virtual cable was unplugged in VirtualBox from an earlier test; reconnecting it and/or recreating the nmcli profile fixed it.
+- Flapping the virtual cable a few times left stale ARP entries, producing corrupted/duplicate ping replies — not an actual network fault.
 
 ### What I learned
 - An exploit title's version range (`< X`) only means the bug was *introduced* at some point before X and fixed in X — it doesn't mean every older version is affected. Always check the advisory text.
 - Credential enumeration (testing default/weak logins) is a standard, necessary step before any further access — not something to skip by just looking up documented defaults.
-- A single target presents multiple independent compromise chains: service authentication + UDF code execution + SUID binary local privilege escalation (`postgres` $\rightarrow$ `/usr/bin/nmap --interactive` $\rightarrow$ `root`), direct unauthenticated daemon RCE (`samba/usermap_script`), and administrative service default credentials (VNC `password`).
-- A multi-homed Linux box (two NICs) uses the most specific matching route for each destination; the default route only handles traffic with no more specific match. Setting `ipv4.never-default` on internal lab adapters prevents routing confusion with WAN NAT.
+- A multi-homed Linux box (two NICs) uses the most specific matching route for each destination; the "default route" only handles traffic with no more specific match.
 
 ### Next
-- Begin deployment of Windows Server in the Users zone for Active Directory exercises.
-- Set up Blue Team detection and monitoring infrastructure (Wazuh SIEM) to log and detect these attack patterns.
-- Consolidate findings (service, version, CVE, credentials found, exploit chain) into a professional pentest report.
+- Decide whether to pursue the PostgreSQL privilege-escalation path further or move to Blue Team work (Wazuh) with what's already found.
+- Keep consolidating findings (service, version, port, credentials found, method used) toward the final report.
+
+---
+
+## Day 3 — 2026-11-20
+
+### Goals
+- Obtain an initial foothold on Metasploitable2 by targeting an unexploited service, concluding the Red Team phase before starting Blue Team detection.
+
+### What I did
+- Having already exploited PostgreSQL via UDF on Day 2, and having previously practiced exploiting services like MySQL and ProFTPD in prior lab contexts, I chose to skip redundant testing on those and focus my efforts on unfamiliar territory.
+- Exploited UnrealIRCd 3.2.8.1 on Metasploitable's IRC service (port 6667) using Metasploit's `exploit/unix/irc/unreal_ircd_3281_backdoor` module — [CVE-2010-2075](https://www.incibe.es/en/incibe-cert/early-warning/vulnerabilities/cve-2010-2075).
+- Obtained an interactive Meterpreter session; command `getuid` confirmed the session executes with `root` privileges.
+
+### What I learned
+- CVE-2010-2075 is a supply-chain backdoor: the official UnrealIRCd 3.2.8.1 source archive was tampered with at the distribution server, so the backdoor is present regardless of how the service is configured — not a logic flaw in the protocol itself.
+- Landing directly as `root` reflects how permissively the service was run on Metasploitable, which is realistic for this intentionally vulnerable target but not for a hardened production system.
+
+### Next
+- Expand the assessment to web applications exposed on port 80 (DVWA).
+- Document all exploitation findings and prepare for Blue Team detection (Wazuh SIEM).
+
+---
+
+## Day 4 — 2026-11-21
+
+### Goals
+- Assess web applications hosted on Metasploitable2 (Apache 2.2.8 / PHP 5.2.4), focusing on DVWA (Damn Vulnerable Web Application).
+- Conduct web directory reconnaissance and user enumeration.
+- Evaluate authentication brute-forcing tools (Burp Suite Intruder vs. THC-Hydra vs. Wfuzz).
+- Test OS Command Injection across different security levels (Low, Medium, High).
+
+### What I did
+- **Directory Indexing & User Enumeration**:
+  - Navigated to `http://10.0.10.30/dvwa/hackable/` and discovered directory browsing was enabled on Apache.
+  - Enumerated `/dvwa/hackable/users/`, which exposed avatar image filenames revealing 5 valid application usernames: `1337`, `admin`, `gordonb`, `pablo`, and `smithy`.
+- **Authentication Brute-Forcing**:
+  - Intercepted the DVWA login POST request (`/dvwa/login.php`) via Burp Suite and configured Intruder using a targeted dictionary.
+  - Utilized `Grep - Match` against the failure string `"Username and/or password incorrect."` to detect login anomalies; successfully identified the valid administrative credential `admin:password` (reflected by unchecked error match and distinct response length 4985 vs. 4923 bytes).
+  - Attempted command-line brute-forcing using **THC-Hydra** (`hydra -l admin -P ... http-post-form`), but found it to be an **unoptimal solution** due to rigid POST-form delimiter syntax, complex cookie handling, and false positive matches (flagging 16 false matches within 2 seconds due to an incorrect failure match string and unauthenticated session redirection).
+  - Switched to **Wfuzz** as an optimal alternative: configured the session cookie (`PHPSESSID` and `security=low`) with the `darkweb2017_top-1000.txt` wordlist (`wfuzz -c -z file,... -d "username=admin&password=FUZZ&Login=Login" -b "PHPSESSID=...; security=low" http://10.0.10.30/dvwa/vulnerabilities/brute/`).
+  - Wfuzz successfully isolated `password` (ID 4, length 4637 characters, distinct word/line count) from incorrect attempts before hitting the server's 90-second socket timeout.
+- **OS Command Injection (DVWA Ping utility `/dvwa/vulnerabilities/exec/`)**:
+  - **Security = Low**: Input validation was completely absent (`shell_exec("ping -c 3 " . $target)`). Injected **Payload 1**: `10.0.10.30 && cat /etc/passwd`, which appended the command after the ping and dumped the entire `/etc/passwd` file.
+  - **Security = Medium**: The application introduced a blacklist attempting to strip `;` and `&&` (`str_replace(array("&", ";"), "", $target)`). Injected **Payload 2**: `10.0.10.30 | cat /etc/passwd`, bypassing the filter via the pipe (`|`) operator and executing arbitrary commands.
+  - **Security = High**: Inspected the PHP source code to assess exploitability. Identified strict input validation: the code splits the IP address by `.` (`explode(".", $target)`), verifies that exactly 4 octets exist (`sizeof($octet) == 4`), and validates that every octet is strictly numeric (`is_numeric($octet[0])` through `is_numeric($octet[3])`). Because no shell metacharacters or alphanumeric command strings can satisfy this condition, **Security = High is impossible to break**.
+
+### Problems & fixes
+- **Hydra Syntax & False Positives**: Hydra failed initially with invalid parameter count, and then generated 16 false positives because the error string pattern and cookie state were desynchronized with DVWA's session flow. Fixed by transitioning to Wfuzz, which provided cleaner HTTP header injection and accurate response filtering.
+- **Wfuzz Pycurl Timeout**: Long-running brute-force requests hit a 90-second server timeout due to Apache keep-alive exhaustion on Metasploitable2. Mitigated by filtering directly on response word/character counts and using targeted password lists.
+- **Medium Security Blacklist Filter**: DVWA Medium sanitized `&&` and `;`, breaking standard command chaining. Fixed by switching to the pipe operator (`|`), demonstrating the fundamental weakness of naive blacklist sanitization.
+
+### What I learned
+- Directory indexing is an overlooked high-impact information disclosure flaw that provides attackers with targeted usernames for offline or online brute-force attacks.
+- Blacklisting specific characters (`&&`, `;`) in input validation is fragile and ineffective because alternative shell operators (`|`, `||`, newline, backticks) can achieve the same command chaining.
+- Whitelisting and type checking (as implemented in DVWA High with `explode()` and `is_numeric()`) provide genuine security by ensuring inputs conform strictly to expected data types, making command injection impossible.
+- Tool selection matters: while Burp Intruder excels in interactive GUI analysis and Wfuzz offers robust and flexible header/cookie CLI fuzzing, Hydra can be prone to false positives when web application sessions require dynamic cookie management.
+
+### Next
+- Finalize and compile all Red Team findings into `reports/pentest-report.md`.
+- Begin the Blue Team phase: deploy and configure Wazuh SIEM to detect the attacks executed across Days 1–4.
 
 ---
 

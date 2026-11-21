@@ -16,10 +16,9 @@ All attacks, scans, and tests described in this repository are performed **exclu
 ## Stack
 
 - **Virtualization**: VirtualBox
-- **Firewall / router**: pfSense CE 2.6.0
-- **Attacker**: Kali Linux (Dual-homed: eth0 = NAT/WAN, eth1 = net-attackers/Lab)
-- **Targets**: Metasploitable2, Ubuntu Server (Apache), Windows Server (upcoming)
-- **Offensive tooling**: Nmap, Metasploit Framework, Searchsploit, VNCViewer
+- **Firewall / router**: pfSense CE
+- **Attacker**: Kali Linux
+- **Targets**: Metasploitable2, Ubuntu Server, Windows Server (upcoming)
 - **Detection**: Wazuh (upcoming)
 
 ## Architecture
@@ -35,26 +34,23 @@ homelab-cyber/
 │   ├── journal.md           # Step-by-step lab notebook
 │   └── firewall-rules.md    # pfSense rules and their justification
 ├── screenshots/              # Screenshots
-└── reports/                   # Final reports (pentest, etc.)
+└── reports/
+    └── pentest-report.md    # Comprehensive penetration test report (Metasploitable2)
 ```
 
 ## Progress
 
 - [x] Segmented network (4 zones: WAN, Servers, Users, Attackers)
 - [x] pfSense installed and configured
-- [x] First firewall rules (targeted ICMP & HTTP to Ubuntu)
-- [x] Metasploitable reconnaissance (Nmap service & version scan)
-- [x] Vulnerability research and credential enumeration (Searchsploit, Metasploit)
-- [x] Metasploitable compromise & root access across multiple vectors:
-  - [x] PostgreSQL UDF injection to Meterpreter (`postgres` user) + SUID Nmap LPE to `root`
-  - [x] Samba `usermap_script` (CVE-2007-2447) direct remote `root` shell
-  - [x] VNC default credential compromise (`password`) & X11 root desktop
-- [x] Attacker multi-homing & network stabilization (Kali dual-adapter NAT + Lab routing)
+- [x] First firewall rule (targeted ICMP)
+- [x] Metasploitable reconnaissance (Nmap)
+- [x] Vulnerability research, credential enumeration, and exploitation on exposed services
+- [x] Web application security assessment (DVWA — Directory indexing, Brute-forcing, OS Command Injection)
+- [x] Final penetration test report ([`reports/pentest-report.md`](reports/pentest-report.md))
 - [ ] Active Directory (Windows Server)
 - [ ] SIEM / detection (Wazuh)
 - [ ] Hardening and re-testing
-- [ ] Final penetration test report
 
 ## Author
 
-Mohamed Chemseddin BOUFARIS - Cybersecurity student @ENSIAS
+Mohamed Chemseddin BOUFARIS — Cybersecurity student
