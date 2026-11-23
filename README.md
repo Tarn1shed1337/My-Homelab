@@ -45,9 +45,9 @@ homelab-cyber/
 - [x] First firewall rule (targeted ICMP)
 - [x] Metasploitable reconnaissance (Nmap)
 - [x] Vulnerability research, credential enumeration, and exploitation on exposed services
-- [x] Web application security assessment (DVWA — Directory indexing, Brute-forcing, OS Command Injection)
-- [x] Final penetration test report ([`reports/pentest-report.md`](reports/pentest-report.md))
-- [ ] Active Directory (Windows Server)
+- [x] Web application security assessment (DVWA — Full OWASP suite: Directory Indexing, Brute-Force, Command Injection, CSRF, LFI, SQLi, File Upload to RCE, Reflected/Stored XSS)
+- [x] Comprehensive penetration test report ([`reports/pentest-report.md`](reports/pentest-report.md))
+- [ ] Active Directory (Windows Server deployment in progress)
 - [ ] SIEM / detection (Wazuh)
 - [ ] Hardening and re-testing
 

