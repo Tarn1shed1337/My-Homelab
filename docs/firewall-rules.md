@@ -12,6 +12,10 @@
 | ATTACKERS | Pass | ICMP | ATTACKERS net | 10.0.10.20 | — | Targeted connectivity test (ping) to Ubuntu |
 | ATTACKERS | Pass | TCP | ATTACKERS net | 10.0.10.20 | 80 | HTTP access test to Ubuntu |
 | ATTACKERS | Pass | * | ATTACKERS net | 10.0.10.30 | * | Broad access to Metasploitable (intentionally exposed lab target) |
+| ATTACKERS | Pass | TCP/UDP | ATTACKERS net | 10.0.10.40 | 88 | Kerberos authentication (AS-REP Roasting & Kerberoasting from Kali) |
+| ATTACKERS | Pass | TCP/UDP | ATTACKERS net | 10.0.10.40 | 389 | LDAP directory access & attribute modification (`bloodyAD` ACL abuse) |
+| ATTACKERS | Pass | TCP/UDP | ATTACKERS net | 10.0.10.40 | 53 | DNS resolution for BloodHound collector (`bloodhound-python`) |
+| USERS | Pass | * | USERS net | 10.0.10.40 | * | Full access to DC for legitimate domain join & client communication |
 
 ## Observations
 

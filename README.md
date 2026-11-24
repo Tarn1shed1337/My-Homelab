@@ -18,7 +18,7 @@ All attacks, scans, and tests described in this repository are performed **exclu
 - **Virtualization**: VirtualBox
 - **Firewall / router**: pfSense CE
 - **Attacker**: Kali Linux
-- **Targets**: Metasploitable2, Ubuntu Server, Windows Server (upcoming)
+- **Targets**: Metasploitable2, Ubuntu Server, Windows Server 2019 (DC01 — Active Directory domain `label.local`), Windows 10 Pro (domain-joined client)
 - **Detection**: Wazuh (upcoming)
 
 ## Architecture
@@ -47,7 +47,7 @@ homelab-cyber/
 - [x] Vulnerability research, credential enumeration, and exploitation on exposed services
 - [x] Web application security assessment (DVWA — Full OWASP suite: Directory Indexing, Brute-Force, Command Injection, CSRF, LFI, SQLi, File Upload to RCE, Reflected/Stored XSS)
 - [x] Comprehensive penetration test report ([`reports/pentest-report.md`](reports/pentest-report.md))
-- [ ] Active Directory (Windows Server deployment in progress)
+- [x] Active Directory deployment (Windows Server 2019 DC01, domain `label.local`), domain-joined Windows 10 Pro client, exploitation (Kerberoasting, AS-REP Roasting, ACL GenericAll abuse), and BloodHound Community Edition attack-path mapping
 - [ ] SIEM / detection (Wazuh)
 - [ ] Hardening and re-testing
 
