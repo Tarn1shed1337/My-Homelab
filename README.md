@@ -48,6 +48,7 @@ homelab-cyber/
 - [x] Web application security assessment (DVWA — Full OWASP suite: Directory Indexing, Brute-Force, Command Injection, CSRF, LFI, SQLi, File Upload to RCE, Reflected/Stored XSS)
 - [x] Comprehensive penetration test report ([`reports/pentest-report.md`](reports/pentest-report.md))
 - [x] Active Directory deployment (Windows Server 2019 DC01, domain `label.local`), domain-joined Windows 10 Pro client, exploitation (Kerberoasting, AS-REP Roasting, ACL GenericAll abuse), and BloodHound Community Edition attack-path mapping
+- [x] Credential dumping (LSASS memory extraction), Pass-the-Hash, DCSync replication (`Administrator` RID 500), and cross-tier password reuse discovery → `NT AUTHORITY\SYSTEM` on DC01 (complete domain takeover from a single compromised workstation)
 - [ ] SIEM / detection (Wazuh)
 - [ ] Hardening and re-testing
 

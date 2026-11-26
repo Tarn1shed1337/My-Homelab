@@ -15,6 +15,7 @@
 | ATTACKERS | Pass | TCP/UDP | ATTACKERS net | 10.0.10.40 | 88 | Kerberos authentication (AS-REP Roasting & Kerberoasting from Kali) |
 | ATTACKERS | Pass | TCP/UDP | ATTACKERS net | 10.0.10.40 | 389 | LDAP directory access & attribute modification (`bloodyAD` ACL abuse) |
 | ATTACKERS | Pass | TCP/UDP | ATTACKERS net | 10.0.10.40 | 53 | DNS resolution for BloodHound collector (`bloodhound-python`) |
+| ATTACKERS | Pass | TCP | ATTACKERS net | 10.0.10.40, 10.0.20.10 | 135, 445 | MSRPC & SMB access for BloodHound `-c All` enumeration and `impacket-psexec` Pass-the-Hash |
 | USERS | Pass | * | USERS net | 10.0.10.40 | * | Full access to DC for legitimate domain join & client communication |
 
 ## Observations
