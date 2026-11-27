@@ -472,6 +472,122 @@ Each day gets one entry. Copy the template at the bottom when starting a new day
   - **Event ID 7045 / 4697** (service creation by `impacket-psexec`)
   - **Sysmon Event ID 10** (LSASS process access by non-system processes)
   - **Event ID 4728 / 4732** (privileged group membership changes)
+
+---
+
+## Day 9 — 2026-11-26 / 2026-11-27: Blue Team Phase — Wazuh SIEM Deployment, Detection Engineering, Active Response, FIM & Vulnerability Detection
+
+### Goals
+- Build and validate the end-to-end **Blue Team (Defensive)** phase of the home lab using **Wazuh SIEM**: deploy the central SIEM platform, validate concrete detections against real attack techniques, and implement automated containment.
+- Cover four core defensive pillars: suspicious behavior detection (privilege abuse & authentication brute-force), automated containment (**Active Response**), real-time **File Integrity Monitoring (FIM)**, and passive **Vulnerability Detection (CVE correlation)**.
+
+### What I did
+
+**Wazuh SIEM All-in-One Deployment & Agent Enrollment**
+- Deployed a dedicated Ubuntu Server VM (`10.0.10.50`, SERVERS zone) running **Wazuh v4.14.11 all-in-one** (`wazuh-indexer`, `wazuh-manager`, `wazuh-dashboard`, `filebeat`), accessible over HTTPS (`https://10.0.10.50:443`).
+- Added a pfSense rule on `USERS` (`OPT1`) allowing `USERS net → 10.0.10.50` on TCP `1514` (agent event transport) and `1515` (agent enrollment).
+- Installed and enrolled the Wazuh Windows agent (`WazuhSvc`, agent `001` / `Windows-agent`) on the domain-joined Windows 10 Pro workstation (`DESKTOP-C8VMV6Q`, `10.0.20.10`).
+- **Detection #1 — Security Group Privilege Escalation (Event ID 4732 / 4733)**:
+  - Re-tested local group membership modification on `DESKTOP-C8VMV6Q` (adding `compte2` to `Builtin\Administrators` — directly mirroring the privilege abuse chain from Day 8).
+  - Verified native Wazuh detection: **Rule `60154`** (*"Windows: Member added to a security-enabled local group"*, **Severity Level 12**, **MITRE ATT&CK `T1484`** — Defense Evasion / Privilege Escalation), capturing `subjectUserName`, `memberSid`, and `targetUserName: Administrators`.
+
+**Detection #2 — Network SMB Brute-Force Correlation (Event ID 4625 → Rule 60204)**
+- Audited the Wazuh ruleset (`/var/ossec/ruleset/rules/0580-win-security_rules.xml`) across the `authentication_failed` group to locate native correlation rules `60203`–`60207`. Confirmed **Rule `60204`** (*"Multiple Windows Logon Failures"*, Level 10, MITRE `T1110`) triggers on `$MS_FREQ = 8` failed logons within a `240s` timeframe, counting underlying **Rule `60122`** (Event ID `4625`).
+- **First test (6 local interactive attempts via PowerShell)**: Threshold (`8`) was not reached, and `ipAddress` was empty/loopback because interactive logons (`Logon Type 2`) carry no remote source IP.
+- **Second test (cross-zone network SMB attack from Kali, `Logon Type 3`)**:
+  - Initially blocked by pfSense zone segmentation (`445/tcp filtered`) — confirming default isolation works as intended. Added a documented temporary pfSense test rule (`ATTACKERS → 10.0.20.10` TCP `445`).
+  - Port 445 still appeared `filtered` from Kali: PowerShell inspection (`Get-NetConnectionProfile` and `Get-NetFirewallRule -DisplayName "File and Printer Sharing (SMB-In)" | Get-NetFirewallAddressFilter`) revealed the interface was using the `Private` profile, whose built-in SMB inbound rule restricts `RemoteAddress` to `LocalSubnet` (unlike the `Domain` profile which allows `Any`). Expanded `RemoteAddress` to include `10.0.30.0/24` via `Set-NetFirewallRule` for the test.
+  - Executed an SMB dictionary attack from Kali using NetExec (`nxc smb 10.0.20.10 -u compte2 -P /usr/share/wordlists/metasploit/common_roots.txt`, after confirming `hydra` failed against modern SMBv2/v3 dialect negotiation).
+  - **Result**: **Rule `60204`** fired cleanly in Wazuh (17 hits), accurately extracting `data.win.eventdata.ipAddress: 10.0.30.10` (`Logon Type 3`).
+
+**Active Response — Automated Attacker IP Blocking (`route-null` vs `netsh`)**
+- Configured `<active-response>` on the Wazuh Manager targeting agent `001` when `rules_id` `60204` fires (`timeout: 600` seconds).
+- **First attempt (`win_route-null` / `route-null.exe`)**: Although Wazuh logged *"Host Blocked by route-null Active Response"* and `route print` confirmed the null route was added, running `nmap -p 445 -Pn 10.0.20.10` from Kali still showed **`445/tcp open`**. A routing-table null route affects outbound routing decisions and did not reliably prevent the Windows TCP stack from accepting inbound SMB connections in this topology.
+- **Fix & Second attempt (`netsh` / `netsh.exe`)**: Switched `<command>` to `netsh` (blocking the attacker IP directly at the Windows Firewall packet-filtering layer) and re-ran the `nxc` brute-force from Kali.
+- **Result**: Within seconds of Rule `60204` firing, `nmap -p 445 -Pn 10.0.20.10` from Kali transitioned from `open` to **`445/tcp filtered`**. End-to-end automated containment validated in under 1 minute with zero human intervention.
+
+**Detection #3 — Real-Time File Integrity Monitoring (FIM / `syscheck`)**
+- Created a simulated sensitive directory `C:\SensitiveData\config.txt` on the Windows 10 client and added `<directories check_all="yes" realtime="yes">C:\SensitiveData</directories>` to `C:\Program Files (x86)\ossec-agent\ossec.conf`.
+- Modified `config.txt` and confirmed near-instantaneous detection (`decoder.name: syscheck_integrity_changed`, `Mode: realtime`), recording full forensic evidence: file size delta (`92` → `94` bytes), modification timestamp, and before/after **MD5, SHA-1, and SHA-256** cryptographic hashes.
+
+**Detection #4 — Passive Vulnerability Detection (`<vulnerability-detection>`)**
+- Verified `syscollector` (OS & package inventory) was active on the agent, then enabled `<vulnerability-detection>` on the Wazuh Manager (noting the tag was renamed from `<vulnerability-detector>` to `<vulnerability-detection>` in Wazuh 4.14) with both `nvd` and `msu` (Microsoft Security Updates) feeds enabled.
+- Once feed indexing completed, Wazuh correlated the Windows 10 client's inventory (`10.0.19045.2965`) against public advisories and identified **432 unpatched CVEs** (**13 Critical** — including RRAS, MSMQ, PEAP, and PGM Remote Code Execution flaws — **294 High**, and **125 Medium**) without sending a single active scan packet over the network.
+
+### Problems & fixes
+- Brute-force correlation rule not immediately obvious near Event `4625` definitions → broadened search across the ruleset for `authentication_failed`, locating `$MS_FREQ`-based correlation rules `60203`–`60207` in `0580-win-security_rules.xml`.
+- Local PowerShell logon failures lacked an attacker IP (`Logon Type 2`) → pivoted to a realistic cross-subnet network SMB brute-force (`Logon Type 3`) from Kali.
+- SMB port `445` still `filtered` after adding the temporary pfSense test rule → diagnosed Windows Firewall `RemoteAddress: LocalSubnet` restriction on the `Private` profile and scoped it to `10.0.30.0/24` via `Set-NetFirewallRule`.
+- `hydra` returned `invalid reply from target` against modern Windows 10 SMBv2/v3 → switched to NetExec (`nxc smb`).
+- `route-null` Active Response logged success without actually blocking inbound SMB scans → switched to Windows Firewall blocking via `netsh`, empirically verified by `nmap` (`open` → `filtered`).
+- Grepping for `<vulnerability-detector>` in `ossec.conf` returned nothing → tag is named `<vulnerability-detection>` in Wazuh 4.14.
+- Exploratory custom Sysmon rule (`100100`) for host-level credential dumper execution was drafted on the manager after installing Sysmon v15.22 (`Microsoft-Windows-Sysmon/Operational`), but end-to-end alerting was left as an open follow-up item while prioritizing native detections and hardening closure.
+
+### What I learned
+- Wazuh threshold correlation relies on group membership (`if_matched_group`) and global frequency variables (`$MS_FREQ`): individual events (Rule `60122`) must belong to the target group for threshold rules (Rule `60204`) to count them.
+- Logon Type matters operationally for Blue Teams: `Logon Type 2` (interactive) provides no network source IP, whereas `Logon Type 3` (network SMB) populates `ipAddress` for automated firewall containment.
+- An automated response that "succeeds in logs" is not necessarily effective on the wire — every SOAR/Active Response action must be empirically re-tested from the attacker's perspective (`route-null` vs `netsh`).
+- Real-time FIM (`realtime="yes"`) provides indisputable cryptographic non-repudiation (before/after MD5, SHA-1, SHA-256 hashes) within seconds of unauthorized file tampering.
+- Passive CVE correlation via `syscollector` + NVD/MSU feeds surfaces hundreds of host vulnerabilities silently using existing agent telemetry.
+
+### Next
+- Close the full Purple Team loop by applying concrete **defensive hardening** measures on Active Directory and the Windows 10 client, then re-running the exact same offensive techniques to prove remediation empirically.
+
+---
+
+## Day 10 — 2026-11-27: Defensive Hardening & Empirical Re-Testing
+
+### Goals
+- Close the end-to-end security lifecycle (`Attack → Detect → Harden → Re-Test`) by remediating the highest-priority findings from the Red and Blue Team phases and re-running the **exact same exploitation steps** to prove effectiveness empirically.
+- Address three priority areas: OS patch management (432 CVEs), cross-tier password reuse (`acl-test` / `compte2`), and in-memory credential exposure in LSASS.
+
+### What I did
+
+**Hardening #1 — Patch Management Attempt & End-of-Life (EOL) OS Discovery**
+- Because the `USERS` subnet has no internet access by design, added a temporary pfSense maintenance rule (`USERS → any` TCP `443`) to allow Windows Update checks on `DESKTOP-C8VMV6Q`.
+- Initial attempt via PowerShell (`Install-Module PSWindowsUpdate`) was blocked by PowerShell Execution Policy restrictions and missing NuGet provider bootstrap; pivoted to the native Windows Update GUI (`Settings → Update & Security → Windows Update`).
+- **Unexpected result**: Windows Update reported **"You're up to date"** despite Wazuh identifying **432 unpatched CVEs (13 Critical)**.
+- **Root-cause investigation (`winver`)**: The workstation runs **Windows 10 Pro Version 22H2 (OS Build `19045.2965`)**, which reached **End of Support (EOL) in October 2025**. Because Microsoft no longer issues monthly cumulative security updates for standard Windows 10 22H2 builds, Windows Update truthfully reports "no updates available" while hundreds of vulnerabilities remain permanently unpatched.
+- Documented this as an important architectural finding: routine patch management cannot remediate an EOL operating system — only OS lifecycle migration (Windows 11 or Extended Security Updates) resolves the underlying risk.
+
+**Hardening #2 — Eliminating Cross-Tier Password Reuse (`acl-test` vs `compte2`)**
+- On Day 8, dumping LSASS revealed that Domain Admin `acl-test` and standard user `compte2` shared the exact same NTLM hash (`64f12cddaa88057e06a81b54e73b949b`).
+- On `DC01`, attempted to rotate `acl-test`'s password using `Set-ADAccountPassword -Identity acl-test -Reset ...`:
+  - First attempt failed with `Access is denied` because the PowerShell console was running under `label\windows` (verified via `whoami` and `Get-ADGroupMember -Identity "Domain Admins"`, which showed only `Administrator` and `acl-test`).
+  - Re-ran the command from an elevated `Administrator` session on `DC01` and verified the update via `Get-ADUser -Identity acl-test -Properties PasswordLastSet` (`11/27/2026 5:05:14 PM`).
+- **Empirical Re-Test**: Signed `acl-test` back into the Windows 10 workstation with its new unique password and dumped LSASS memory again from `compte2`:
+  - `acl-test` NTLM hash: **`4accd27585d029d00ea61f3dc3995cc6`**
+  - `compte2` NTLM hash: **`64f12cddaa88057e06a81b54e73b949b`** (unchanged)
+  - Hash identity across privilege tiers is completely eliminated; compromising `compte2`'s password or hash no longer grants automatic Pass-the-Hash equivalence to a Domain Admin.
+
+**Hardening #3 — LSASS Credential Protection via `Protected Users` Security Group**
+- Added Domain Admin `acl-test` to Active Directory's built-in **`Protected Users`** security group on `DC01`:
+  ```powershell
+  Add-ADGroupMember -Identity "Protected Users" -Members acl-test
+  ```
+- **Operational nuance verified**: Group membership changes take effect only upon a **complete sign-out and fresh logon** (issuing a new Kerberos TGT/token), not on an already-open session or "Switch User".
+- **Empirical Re-Test**: Performed a full sign-out and fresh interactive logon as `acl-test` on `DESKTOP-C8VMV6Q`, switched to `compte2`, and executed the exact same LSASS memory extraction used on Day 8:
+  - Every credential provider field (`msv`, `tspkg`, `wdigest`, `kerberos`, `ssp`, `credman`, `cloudap`) returned **completely empty** for `acl-test`'s active sessions — **zero NTLM hash or reusable credential material cached in LSASS**, completely neutralizing the credential dumping & Pass-the-Hash attack chain!
+
+### Problems & fixes
+- Isolated `USERS` zone blocked Windows Update checks → added a temporary scoped HTTPS (`443`) maintenance rule on pfSense.
+- `PSWindowsUpdate` blocked by Execution Policy & NuGet bootstrap → verified directly via native Windows Update GUI + `winver`.
+- `Set-ADAccountPassword` failed with `Access is denied` → session was running under local/non-Domain-Admin user `label\windows`; resolved by executing as `LABEL\Administrator`.
+- `Protected Users` showed no immediate effect on an existing session → required a full sign-out/sign-in cycle to refresh the user's security token and purge legacy MSV1_0 NTLM caching.
+
+### What I learned
+- Vulnerability management tools (Wazuh `syscollector` + CVE feeds) expose lifecycle blind spots that native OS update utilities hide: an EOL OS displays a reassuring *"You're up to date"* banner while harboring hundreds of critical vulnerabilities.
+- **`Protected Users`** is one of the highest-ROI Active Directory hardening controls available: with a single group addition and zero infrastructure cost, it strips NTLM hash caching (`msv`), disables WDigest/CredSSP caching, enforces AES-only Kerberos, shortens TGT lifetime (4 hours), and blocks delegation — breaking the classic workstation-to-DC LSASS/Pass-the-Hash kill chain.
+- Security controls should never be assumed effective solely because a configuration command succeeded — **before/after empirical re-testing** using the identical offensive technique is essential to catch operational caveats (such as active sessions retaining pre-hardening tokens until full re-logon, or `route-null` logging success without blocking traffic).
+
+### Project Conclusion & Future Extensions
+- The home lab now documents a **complete end-to-end Purple Team lifecycle**:
+  1. **Segmented Network Engineering** (pfSense 4-zone isolation)
+  2. **Linux & Web Offensive Assessment** (Metasploitable2 services, LPE, full OWASP DVWA suite)
+  3. **Active Directory Kill Chain** (AS-REP Roasting, Kerberoasting, `GenericAll` ACL abuse, BloodHound CE mapping, LSASS dumping, Pass-the-Hash, DCSync Tier 0 takeover)
+  4. **Blue Team SIEM & Automated Containment** (Wazuh v4.14 deployment, Event 4732/4625 detections, `netsh` Active Response, real-time FIM, passive CVE detection)
+  5. **Hardening & Empirical Re-Testing** (EOL lifecycle analysis, cross-tier password rotation, `Protected Users` LSASS neutralization)
+- Optional future extensions: enrolling `DC01` directly as a Wazuh agent to detect `Event ID 4662` (DCSync) in real time, and finalizing custom Sysmon Event ID 1 / 10 rules (`local_rules.xml`) for host-level hacktool & LSASS `ProcessAccess` alerting.
 ---
 
 ## Template for new entries

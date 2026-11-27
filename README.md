@@ -19,7 +19,7 @@ All attacks, scans, and tests described in this repository are performed **exclu
 - **Firewall / router**: pfSense CE
 - **Attacker**: Kali Linux
 - **Targets**: Metasploitable2, Ubuntu Server, Windows Server 2019 (DC01 — Active Directory domain `label.local`), Windows 10 Pro (domain-joined client)
-- **Detection**: Wazuh (upcoming)
+- **Detection / Blue Team**: Wazuh SIEM v4.14.11 (all-in-one deployment on dedicated Ubuntu Server `10.0.10.50`)
 
 ## Architecture
 
@@ -35,7 +35,7 @@ homelab-cyber/
 │   └── firewall-rules.md    # pfSense rules and their justification
 ├── screenshots/              # Screenshots
 └── reports/
-    └── pentest-report.md    # Comprehensive penetration test report (Metasploitable2)
+    └── pentest-report.md    # End-to-end Red Team, Wazuh SIEM Detection & Hardening report
 ```
 
 ## Progress
@@ -49,8 +49,8 @@ homelab-cyber/
 - [x] Comprehensive penetration test report ([`reports/pentest-report.md`](reports/pentest-report.md))
 - [x] Active Directory deployment (Windows Server 2019 DC01, domain `label.local`), domain-joined Windows 10 Pro client, exploitation (Kerberoasting, AS-REP Roasting, ACL GenericAll abuse), and BloodHound Community Edition attack-path mapping
 - [x] Credential dumping (LSASS memory extraction), Pass-the-Hash, DCSync replication (`Administrator` RID 500), and cross-tier password reuse discovery → `NT AUTHORITY\SYSTEM` on DC01 (complete domain takeover from a single compromised workstation)
-- [ ] SIEM / detection (Wazuh)
-- [ ] Hardening and re-testing
+- [x] SIEM / detection (Wazuh v4.14.11: privilege group alerting Rule `60154`, SMB brute-force correlation Rule `60204`, automated Active Response firewall blocking via `netsh`, real-time FIM, and passive CVE detection uncovering 432 CVEs)
+- [x] Hardening and empirical re-testing (Windows 10 22H2 EOL lifecycle analysis, cross-tier password reuse elimination, and `Protected Users` enrollment completely neutralizing LSASS credential dumping)
 
 ## Author
 

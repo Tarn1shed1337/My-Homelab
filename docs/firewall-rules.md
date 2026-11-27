@@ -17,6 +17,14 @@
 | ATTACKERS | Pass | TCP/UDP | ATTACKERS net | 10.0.10.40 | 53 | DNS resolution for BloodHound collector (`bloodhound-python`) |
 | ATTACKERS | Pass | TCP | ATTACKERS net | 10.0.10.40, 10.0.20.10 | 135, 445 | MSRPC & SMB access for BloodHound `-c All` enumeration and `impacket-psexec` Pass-the-Hash |
 | USERS | Pass | * | USERS net | 10.0.10.40 | * | Full access to DC for legitimate domain join & client communication |
+| USERS | Pass | TCP | USERS net | 10.0.10.50 | 1514, 1515 | Wazuh agent event collection (`1514`) and agent enrollment (`1515`) to Wazuh SIEM |
+
+## Temporary Validation & Maintenance Exceptions
+
+| Interface | Action | Protocol | Source | Destination | Port | Scope / Lifecycle |
+|---|---|---|---|---|---|---|
+| ATTACKERS | Pass | TCP | ATTACKERS net | 10.0.20.10 | 445 | Temporary exception used during Blue Team testing to replay cross-zone SMB brute-force (`nxc`) and validate Wazuh Active Response (`netsh`) |
+| USERS | Pass | TCP | USERS net | * (Internet) | 443 | Temporary maintenance exception opened during the Hardening phase to verify Windows Update status on the isolated Windows 10 client |
 
 ## Observations
 
